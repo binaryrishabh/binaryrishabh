@@ -245,12 +245,20 @@ async function liveData() {
   } else console.warn('[github] no GITHUB_TOKEN; using cached contribution data');
   const lc = await tryIt('leetcode', async () => {
     const r = await fetch('https://leetcode.com/graphql', { method: 'POST', headers: { 'Content-Type': 'application/json', Referer: 'https://leetcode.com', 'User-Agent': 'Mozilla/5.0' },
-      body: JSON.stringify({ query: 'query($u:String!){matchedUser(username:$u){submitStatsGlobal{acSubmissionNum{difficulty count}}} userContestRanking(username:$u){rating}}', variables: { u: LEETCODE } }) });
-    const j = (await r.json()).data; return { solved: j.matchedUser.submitStatsGlobal.acSubmissionNum.find((x) => x.difficulty === 'All').count, rating: Math.round(j.userContestRanking?.rating ?? 0) };
+      body: JSON.stringify({ query: 'query($u:String!){matchedUser(username:$u){submitStatsGlobal{acSubmissionNum{difficulty count}}} userContestRanking(username:$u){rating topPercentage attendedContestsCount} userContestRankingHistory(username:$u){attended rating contest{startTime}}}', variables: { u: LEETCODE } }) });
+    const j = (await r.json()).data, by = (k) => j.matchedUser.submitStatsGlobal.acSubmissionNum.find((x) => x.difficulty === k).count;
+    return {
+      solved: by('All'), easy: by('Easy'), medium: by('Medium'), hard: by('Hard'),
+      rating: Math.round(j.userContestRanking?.rating ?? 0), top: j.userContestRanking?.topPercentage, contests: j.userContestRanking?.attendedContestsCount,
+      history: (j.userContestRankingHistory ?? []).filter((x) => x.attended).map((x) => [new Date(x.contest.startTime * 1000).toISOString().slice(0, 10), Math.round(x.rating)]),
+    };
   });
   if (lc?.solved) d.leetcode = lc;
-  const ac = await tryIt('atcoder', async () => { const h = await (await fetch(`https://atcoder.jp/users/${ATCODER}/history/json`)).json(); return h.length ? h[h.length - 1].NewRating : undefined; });
-  if (ac) d.atcoder = ac;
+  const ac = await tryIt('atcoder', async () => {
+    const h = (await (await fetch(`https://atcoder.jp/users/${ATCODER}/history/json`)).json()).filter((x) => x.IsRated);
+    return h.length ? { rating: h[h.length - 1].NewRating, history: h.map((x) => [x.EndTime.slice(0, 10), x.NewRating]) } : undefined;
+  });
+  if (ac) { d.atcoder = ac.rating; d.atcoderHistory = ac.history; }
   delete d.codeforces;
   d.leetcode ??= { solved: 785, rating: 1655 }; d.atcoder ??= 1239;
   d.updated = new Date().toISOString().slice(0, 10);
@@ -303,6 +311,179 @@ function live(t, d) {
   return svg({ w: 1200, h: 380, t, fonts: ['serif', 'sans', 'sansBold', 'mono'], title: `GitHub activity: ${d.total ?? 0} contributions in the last 12 months, current streak ${s.cur} days, longest ${s.longest} days. LeetCode ${d.leetcode.rating}, AtCoder ${d.atcoder}.`, body });
 }
 
+// ---------- shared pieces for the deeper sections ----------
+const panel = (t, x, y, w, h, r = 18) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${t.panel}" filter="url(#puff)"/>
+<rect x="${x + 7}" y="${y + 7}" width="${w - 14}" height="${h - 14}" rx="${r - 5}" fill="none" stroke="${t.stitch}" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+const badge = (t, x, y, n) => `<circle cx="${x}" cy="${y}" r="10" fill="${t.accent}"/><text x="${x}" y="${y + 4}" text-anchor="middle" class="mono" font-size="11" fill="${t.panel}">${n}</text>`;
+const nbox = (t, x, y, w, title, sub, hot = false) => `<rect x="${x}" y="${y}" width="${w}" height="60" rx="12" fill="${t.node}" stroke="${hot ? t.accent : t.line}" stroke-width="${hot ? 2 : 1.5}"/>
+<text x="${x + 16}" y="${y + 26}" class="sans ink" font-size="15" font-weight="600">${esc(title)}</text>
+<text x="${x + 16}" y="${y + 45}" class="mono soft" font-size="10.5">${esc(sub)}</text>`;
+const MON = (iso) => `${MONTHS[+iso.slice(5, 7) - 1]} ${iso.slice(0, 4)}`;
+
+// ---------- InfraForge architecture ----------
+function architecture(t) {
+  const W = 1200, H = 600;
+  const edge = (d) => `<path d="${d}" fill="none" stroke="${t.line}" stroke-width="2"/>`;
+  const flow = (path, dur, n, r = 3.8) => Array.from({ length: n }, (_, i) => `<circle r="${r}" fill="${t.accent}"><animateMotion dur="${dur}s" begin="${((dur / n) * i).toFixed(2)}s" repeatCount="indefinite" path="${path}"/></circle>`).join('');
+  const steps = [
+    'Design on the canvas. Model 2 runs in a Web Worker, so you watch it live.',
+    'The API validates the run with Zod; run and outbox row share one transaction.',
+    'BullMQ drives a 9-stage pipeline; a worker replays the run on the same engine.',
+    'Snapshots reach the canvas through Redis Pub/Sub and WebSockets at 1 Hz.',
+    "Only the server's replay is stored and scored, so a browser can't change it.",
+    'Deterministic: same design, workload, seed and actions give the same result.',
+  ];
+  const body = `
+<text x="48" y="60" class="lbl">INSIDE INFRAFORGE</text>
+<text x="1152" y="60" text-anchor="end" class="lbl">HOW A RUN BECOMES AN OFFICIAL RESULT</text>
+<text x="46" y="104" class="serif ink" font-size="30">The browser runs it live. The server replays it. <tspan class="acc">Only the replay counts.</tspan></text>
+${panel(t, 48, 136, 262, 316)}
+<text x="70" y="168" class="lbl" font-size="11">BROWSER</text>
+${panel(t, 346, 136, 806, 316)}
+<text x="368" y="168" class="lbl" font-size="11">SERVER · BUN + EXPRESS · 4 SERVICES</text>
+${edge('M178 244 V264')}${edge('M178 324 V344')}
+${edge('M288 214 C330 214 330 222 372 222')}${edge('M542 222 H574')}${edge('M744 222 H776')}${edge('M946 222 H978')}
+${edge('M1053 252 V344')}${edge('M1010 252 C1010 300 870 296 861 344')}${edge('M776 374 H744')}${edge('M574 374 H288')}
+<text x="430" y="366" class="mono soft" font-size="10" letter-spacing=".08em">1 HZ SNAPSHOTS</text>
+${flow('M288 214 L372 222 L1053 222 L1053 374', 4.5, 3)}
+${flow('M1053 222 L861 374 L288 374', 3.6, 3)}
+${flow('M178 214 L178 374', 2.4, 2, 3.2)}
+${nbox(t, 68, 184, 222, 'Canvas', 'React · dnd-kit · undo/redo')}
+${nbox(t, 68, 264, 222, 'Model 2 engine', 'Web Worker · runs live')}
+${nbox(t, 68, 344, 222, 'Live view', 'Zustand · per-node updates')}
+${nbox(t, 372, 192, 170, 'API', 'Zod-validated runs')}
+${nbox(t, 574, 192, 170, 'PostgreSQL', 'run + outbox, 1 txn')}
+${nbox(t, 776, 192, 170, 'BullMQ', '9-stage pipeline')}
+${nbox(t, 978, 192, 150, 'Worker', 'same engine, replay')}
+${nbox(t, 574, 344, 170, 'WebSocket server', 'pushes to the canvas')}
+${nbox(t, 776, 344, 170, 'Redis Pub/Sub', 'progress snapshots')}
+${nbox(t, 978, 344, 150, 'Official record', 'the only score', true)}
+${badge(t, 284, 186, 1)}${badge(t, 536, 194, 2)}${badge(t, 940, 194, 3)}${badge(t, 940, 346, 4)}${badge(t, 1122, 346, 5)}${badge(t, 284, 266, 6)}
+${steps.map((s, i) => { const col = i < 3 ? 0 : 1, row = i % 3, x = col ? 620 : 48, y = 498 + row * 30; return `${badge(t, x + 10, y - 5, i + 1)}<text x="${x + 30}" y="${y}" class="sans soft" font-size="14">${esc(s)}</text>`; }).join('\n')}`;
+  return svg({ w: W, h: H, t, fonts: ['serif', 'sans', 'sansBold', 'mono'], title: 'InfraForge architecture: the browser runs the simulation live in a Web Worker; the API stores the run with a transactional outbox; BullMQ drives a 9-stage pipeline where a worker replays the run on the same deterministic engine; snapshots stream back through Redis Pub/Sub and WebSockets at 1 Hz; only the server replay is the official score.', body });
+}
+
+// ---------- competitive programming ----------
+function chart(t, { x, y, w, h, series, lo, hi, step, bands = [] }) {
+  const cx = x + 24, cw = w - 48, cy = y + 74, ch = h - 118;
+  const t0 = Date.parse(series[0][0]), t1 = Math.max(Date.parse(series[series.length - 1][0]), t0 + 1);
+  const X = (d) => cx + ((Date.parse(d) - t0) / (t1 - t0)) * cw, Y = (v) => cy + ch - ((v - lo) / (hi - lo)) * ch;
+  let g = '';
+  bands.forEach(([a, b, col, name]) => {
+    const ya = Y(Math.min(b, hi)), yb = Y(Math.max(a, lo));
+    if (yb <= ya) return;
+    g += `<rect x="${cx}" y="${ya.toFixed(1)}" width="${cw}" height="${(yb - ya).toFixed(1)}" fill="${col}" opacity="${t.bg === '#efece4' ? 0.09 : 0.14}"/><text x="${b > series[series.length - 1][1] && a <= series[series.length - 1][1] ? cx + 44 : cx + cw - 6}" y="${(yb - 6).toFixed(1)}"${b > series[series.length - 1][1] && a <= series[series.length - 1][1] ? '' : ' text-anchor="end"'} class="mono" font-size="9" letter-spacing=".1em" fill="${col}" opacity=".9">${name}</text>`;
+  });
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) g += `<path d="M${cx} ${Y(v).toFixed(1)} H${cx + cw}" stroke="${t.line}" stroke-dasharray="2 4"/><text x="${cx}" y="${(Y(v) - 4).toFixed(1)}" class="mono soft" font-size="9.5">${v}</text>`;
+  const pts = series.map(([d, v]) => [X(d), Y(v)]);
+  const line = pts.map(([a, b], i) => `${i ? 'L' : 'M'}${a.toFixed(1)} ${b.toFixed(1)}`).join(' ');
+  const area = `${line} L${pts[pts.length - 1][0].toFixed(1)} ${cy + ch} L${pts[0][0].toFixed(1)} ${cy + ch} Z`;
+  const [lx, ly] = pts[pts.length - 1];
+  g += `<path d="${area}" fill="${t.accent}" fill-opacity=".12" class="cpa"/>
+<path d="${line}" pathLength="1" fill="none" stroke="${t.accent}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="1" class="cpl"/>
+${pts.map(([a, b]) => `<circle cx="${a.toFixed(1)}" cy="${b.toFixed(1)}" r="2.2" fill="${t.accent}" class="cpa"/>`).join('')}
+<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="9" fill="${t.accent}" opacity=".2" class="pulse"/><circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="4.5" fill="${t.accent}"/>
+<text x="${cx}" y="${cy + ch + 20}" class="mono soft" font-size="10">${MON(series[0][0]).toUpperCase()}</text>
+<text x="${cx + cw}" y="${cy + ch + 20}" text-anchor="end" class="mono soft" font-size="10">${MON(series[series.length - 1][0]).toUpperCase()}</text>`;
+  return g;
+}
+
+function cp(t, d) {
+  const lc = d.leetcode, lcH = lc.history?.length ? lc.history : [[d.updated, lc.rating]];
+  const acH = d.atcoderHistory?.length ? d.atcoderHistory : [[d.updated, d.atcoder]];
+  const tier = (r) => (r >= 1600 ? 'BLUE' : r >= 1200 ? 'CYAN' : r >= 800 ? 'GREEN' : r >= 400 ? 'BROWN' : 'GRAY');
+  const lcVals = lcH.map((x) => x[1]), lcLo = Math.floor((Math.min(...lcVals) - 60) / 100) * 100, lcHi = Math.ceil((Math.max(...lcVals) + 60) / 100) * 100;
+  const acHi = Math.max(1400, Math.ceil((Math.max(...acH.map((x) => x[1])) + 150) / 400) * 400);
+  const head = (x, name, rating, sub) => `<text x="${x + 24}" y="${126}" class="sans ink" font-size="17" font-weight="600">${name}</text>
+<text x="${x + 508}" y="${130}" text-anchor="end" class="serif ink" font-size="38">${rating}</text>
+<text x="${x + 508}" y="${150}" text-anchor="end" class="mono soft" font-size="10" letter-spacing=".1em">${esc(sub)}</text>`;
+  const tot = lc.easy + lc.medium + lc.hard || 1, bw = 532, segs = [[lc.easy, t.add, 'EASY'], [lc.medium, '#e0a53a', 'MEDIUM'], [lc.hard, t.warn, 'HARD']];
+  let bx = 48, bar = '';
+  segs.forEach(([n, c]) => { const w = (n / tot) * bw; bar += `<rect x="${bx.toFixed(1)}" y="486" width="${Math.max(w - 2, 1).toFixed(1)}" height="10" rx="5" fill="${c}"/>`; bx += w; });
+  const body = `
+<text x="48" y="60" class="lbl">COMPETITIVE PROGRAMMING · RATING HISTORY</text>
+<text x="1152" y="60" text-anchor="end" class="lbl">REFRESHED DAILY · ${esc(d.updated)}</text>
+${panel(t, 48, 88, 532, 340)}${panel(t, 620, 88, 532, 340)}
+${head(48, 'LeetCode', lc.rating, `${lc.top ? `TOP ${lc.top}% · ` : ''}${lc.contests ?? lcH.length} CONTESTS`)}
+${head(620, 'AtCoder', d.atcoder, `${tier(d.atcoder)} · ${acH.length} RATED CONTESTS`)}
+${chart(t, { x: 48, y: 120, w: 532, h: 300, series: lcH, lo: lcLo, hi: lcHi, step: 100 })}
+${chart(t, { x: 620, y: 120, w: 532, h: 300, series: acH, lo: 0, hi: acHi, step: 400, bands: [[0, 400, '#808080', 'GRAY'], [400, 800, '#804000', 'BROWN'], [800, 1200, '#008000', 'GREEN'], [1200, 1600, '#00c0c0', 'CYAN'], [1600, 2000, '#0000ff', 'BLUE']] })}
+<text x="48" y="472" class="mono soft" font-size="11" letter-spacing=".08em"><tspan class="ink">${lc.solved}</tspan> LEETCODE PROBLEMS SOLVED</text>
+${bar}
+<text x="48" y="520" class="mono soft" font-size="10.5" letter-spacing=".06em">${segs.map(([n, c, l]) => `<tspan fill="${c}">●</tspan> ${n} ${l}`).join('   ')}</text>
+<text x="620" y="472" class="mono soft" font-size="11" letter-spacing=".08em">DAILY PRACTICE</text>
+<text x="620" y="500" class="sans ink" font-size="15">Contest problems in C++, solved and kept in</text>
+<text x="620" y="521" class="sans acc" font-size="15" font-weight="600">github.com/binaryrishabh/C-4-DSA</text>`;
+  return svg({ w: 1200, h: 556, t, fonts: ['serif', 'sans', 'sansBold', 'mono'], title: `Competitive programming: LeetCode rating ${lc.rating}${lc.top ? `, top ${lc.top}%` : ''}, ${lc.solved} problems solved; AtCoder rating ${d.atcoder} (${tier(d.atcoder).toLowerCase()}) over ${acH.length} rated contests.`,
+    css: `.cpl{stroke-dashoffset:0;animation:cpl 10s cubic-bezier(.22,1,.36,1) infinite}@keyframes cpl{0%{stroke-dashoffset:1}30%,92%{stroke-dashoffset:0}100%{stroke-dashoffset:0}}
+.cpa{animation:cpa 10s infinite}@keyframes cpa{0%,12%{opacity:0}32%,100%{opacity:1}}
+.pulse{animation:pulse 2.4s ease-in-out infinite}@keyframes pulse{0%,100%{opacity:.25}50%{opacity:.05}}`, body });
+}
+
+// ---------- toolbox ----------
+function toolbox(t) {
+  const core = new Set(['TypeScript', 'Bun', 'PostgreSQL', 'Redis', 'React']);
+  const groups = [
+    ['LANGUAGES', ['TypeScript', 'JavaScript', 'Python', 'SQL', 'C++', 'Java', 'Rust']],
+    ['BACKEND', ['Node.js', 'Bun', 'Express', 'WebSockets', 'BullMQ', 'Zod', 'Prisma']],
+    ['FRONTEND & DESKTOP', ['React', 'Next.js', 'Electron', 'Zustand', 'Tailwind', 'Vite']],
+    ['DATA', ['PostgreSQL', 'SQLite', 'Redis', 'PyMuPDF', 'NumPy']],
+    ['INFRA', ['Docker', 'Nginx', 'AWS EC2', 'GitHub Actions', 'Vercel', 'Cloudflare']],
+  ];
+  let y = 104, body = `<text x="32" y="56" class="lbl">TOOLBOX</text><text x="568" y="56" text-anchor="end" class="mono soft" font-size="10.5" letter-spacing=".1em"><tspan class="acc">●</tspan> DAILY DRIVERS</text>`;
+  for (const [name, items] of groups) {
+    body += `<text x="32" y="${y}" class="mono soft" font-size="10" letter-spacing=".12em">${esc(name)}</text>`;
+    let x = 32; y += 12;
+    for (const it of items) {
+      const w = Math.round(it.length * 7.1 + 24);
+      if (x + w > 568) { x = 32; y += 34; }
+      const hot = core.has(it);
+      body += `<rect x="${x}" y="${y}" width="${w}" height="26" rx="13" fill="${hot ? t.accent : t.node}" stroke="${hot ? t.accent : t.line}" stroke-width="1.5"/><text x="${x + w / 2}" y="${y + 17.5}" text-anchor="middle" class="sans" font-size="13" font-weight="${hot ? 600 : 400}" fill="${hot ? t.panel : t.ink}">${esc(it)}</text>`;
+      x += w + 8;
+    }
+    y += 58;
+  }
+  if (y - 30 > 480) throw new Error(`toolbox overflows: ${y}`);
+  return svg({ w: 600, h: 500, t, fonts: ['sans', 'sansBold', 'mono'], title: 'Toolbox: TypeScript, Bun, PostgreSQL, Redis and React daily; also JavaScript, Python, SQL, C++, Java, Rust, Node.js, Express, WebSockets, BullMQ, Zod, Prisma, Next.js, Electron, Zustand, Tailwind, Vite, SQLite, PyMuPDF, NumPy, Docker, Nginx, AWS EC2, GitHub Actions, Vercel, Cloudflare.', body });
+}
+
+// ---------- timeline ----------
+function timeline(t, d) {
+  const items = [
+    [new Date().toISOString().slice(0, 10) < '2026-11-06' ? 'NEXT · 6 NOV 2026' : '6 NOV 2026', 'InfraForge public launch', 'The system-design simulator, built since August.', new Date().toISOString().slice(0, 10) < '2026-12-06'],
+    ['SEP 2026', 'Door detector · work trial', 'For a US construction-tech startup.'],
+    ['SEP 2026', 'Allrecipes Tweaks', 'From idea to production in 12 hours.'],
+    ['JUN 2026', 'Started rated contests', `AtCoder ${d.atcoder} · LeetCode ${d.leetcode.rating} so far.`],
+    ['JAN 2026', 'Software Engineer, lapwork', 'Offline-first Windows app. Start-up 65% faster.'],
+    ['EDUCATION', 'B.Tech, Information Technology', 'Kalinga Institute of Industrial Technology (KIIT)'],
+  ];
+  let body = `<text x="32" y="56" class="lbl">TIMELINE</text><path d="M44 86 V448" stroke="${t.line}" stroke-width="2"/>`;
+  items.forEach(([date, title, sub, now], i) => {
+    const y = 94 + i * 66;
+    body += (now ? `<circle cx="44" cy="${y}" r="11" fill="${t.accent}" opacity=".22" class="pulse"/>` : '') +
+      `<circle cx="44" cy="${y}" r="5.5" fill="${now ? t.accent : t.panel}" stroke="${now ? t.accent : t.soft}" stroke-width="2"/>
+<text x="70" y="${y + 4}" class="mono ${now ? 'acc' : 'soft'}" font-size="10.5" letter-spacing=".1em">${esc(date)}</text>
+<text x="70" y="${y + 26}" class="sans ink" font-size="16" font-weight="600">${esc(title)}</text>
+<text x="70" y="${y + 45}" class="sans soft" font-size="13.5">${esc(sub)}</text>`;
+  });
+  return svg({ w: 600, h: 500, t, fonts: ['sans', 'sansBold', 'mono'], title: 'Timeline: InfraForge launches 6 Nov 2026; Sep 2026 door detector work trial and Allrecipes Tweaks; Jun 2026 started rated contests; Jan 2026 joined lapwork as a software engineer; B.Tech IT at KIIT.',
+    css: `.pulse{animation:pulse 2.4s ease-in-out infinite}@keyframes pulse{0%,100%{opacity:.25}50%{opacity:.04}}`, body });
+}
+
+// ---------- footer ----------
+function footer(t) {
+  const body = `
+<text x="48" y="64" class="lbl">CONTACT</text>
+<text x="44" y="138" class="serif ink" font-size="64">Got something <tspan class="acc">slow?</tspan></text>
+<text x="48" y="178" class="sans soft" font-size="18">The quickest way to reach me is email.</text>
+<rect x="716" y="92" width="436" height="56" rx="28" fill="${t.accent}" filter="url(#puff)"/>
+<text x="912" y="126" text-anchor="middle" class="mono" font-size="15.5" fill="${t.panel}">srivastavarishabh2001@gmail.com</text>
+<text x="1118" y="127" text-anchor="middle" class="sans nudge" font-size="20" fill="${t.panel}">→</text>
+<text x="1152" y="182" text-anchor="end" class="mono soft" font-size="10.5" letter-spacing=".1em">INDIA (IST) · OPEN TO REMOTE, OR ONSITE ANYWHERE IN INDIA</text>`;
+  return svg({ w: 1200, h: 230, t, fonts: ['serif', 'sans', 'mono'], title: 'Got something slow? Email srivastavarishabh2001@gmail.com. India (IST), open to remote or onsite anywhere in India.',
+    css: `.nudge{animation:nudge 1.8s ease-in-out infinite}@keyframes nudge{0%,100%{transform:translateX(0)}50%{transform:translateX(5px)}}`, body });
+}
+
 // ---------- write ----------
 mkdirSync('assets/cards', { recursive: true });
 mkdirSync('data', { recursive: true });
@@ -312,5 +493,10 @@ for (const [name, t] of Object.entries(THEMES)) {
   writeFileSync(`assets/hero-${name}.svg`, hero(t));
   for (const [k, c] of Object.entries(CARDS)) writeFileSync(`assets/cards/${k}-${name}.svg`, card(t, c));
   writeFileSync(`assets/live-${name}.svg`, live(t, data));
+  writeFileSync(`assets/architecture-${name}.svg`, architecture(t));
+  writeFileSync(`assets/cp-${name}.svg`, cp(t, data));
+  writeFileSync(`assets/toolbox-${name}.svg`, toolbox(t));
+  writeFileSync(`assets/timeline-${name}.svg`, timeline(t, data));
+  writeFileSync(`assets/footer-${name}.svg`, footer(t));
 }
-console.log('built', Object.keys(CARDS).length * 2 + 4, 'images; live data from', data.updated);
+console.log('built', Object.keys(CARDS).length * 2 + 14, 'images; live data from', data.updated);
