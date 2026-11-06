@@ -12,7 +12,7 @@
 <defs><filter id="puff" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.5"/></filter></defs>
 <rect x=".5" y=".5" width="599" height="499" rx="24" fill="#131210" stroke="#34302a"/>
 <text x="32" y="56" class="lbl">TIMELINE</text><path d="M44 86 V448" stroke="#34302a" stroke-width="2"/><circle cx="44" cy="94" r="11" fill="#8191ff" opacity=".22" class="pulse"/><circle cx="44" cy="94" r="5.5" fill="#8191ff" stroke="#8191ff" stroke-width="2"/>
-<text x="70" y="98" class="mono acc" font-size="10.5" letter-spacing=".1em">NEXT · 6 NOV 2026</text>
+<text x="70" y="98" class="mono acc" font-size="10.5" letter-spacing=".1em">6 NOV 2026</text>
 <text x="70" y="120" class="sans ink" font-size="16" font-weight="600">InfraForge public launch</text>
 <text x="70" y="139" class="sans soft" font-size="13.5">The system-design simulator, built since August.</text><circle cx="44" cy="160" r="5.5" fill="#1c1a17" stroke="#a39b8b" stroke-width="2"/>
 <text x="70" y="164" class="mono soft" font-size="10.5" letter-spacing=".1em">SEP 2026</text>
